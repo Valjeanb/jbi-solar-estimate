@@ -104,10 +104,6 @@ input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;hei
 .cta-card h2{color:#fff;margin-bottom:8px}.cta-card p{opacity:.85;margin-bottom:20px;font-size:15px}
 .cta-card .btn{background:#fff;color:var(--primary);max-width:360px;margin:0 auto;display:block}
 
-/* Config bar */
-.config-bar{background:#fff3cd;border-radius:10px;padding:12px 20px;margin-bottom:24px;display:flex;align-items:center;gap:12px;flex-wrap:wrap}
-.config-bar label{font-size:13px;font-weight:600;white-space:nowrap}
-.config-bar input{padding:6px 12px;border:2px solid #f0c040;border-radius:8px;font-size:14px;width:380px;max-width:100%;font-family:monospace}
 </style>
 </head>
 <body>
@@ -118,10 +114,8 @@ input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;hei
 </div>
 
 <div class="container">
-  <div class="config-bar">
-    <label>Webhook URL:</label>
-    <input type="text" id="baseUrl" value="https://valbmm.app.n8n.cloud/webhook">
-  </div>
+  <!-- Webhook URL (hidden - edit here if needed) -->
+  <input type="hidden" id="baseUrl" value="https://valbmm.app.n8n.cloud/webhook">
 
   <!-- STEP INDICATOR -->
   <div class="card" id="stepIndicator" style="display:none">
@@ -350,7 +344,13 @@ async function submitEstimate() {
     }
 
     lastEstimate = data;
-    displayResults(data);
+    try { displayResults(data); } catch (renderErr) {
+      console.error('Render error:', renderErr);
+      document.getElementById('loading').style.display = 'none';
+      document.getElementById('results').style.display = 'block';
+      showError('errorMsg', 'Display error: ' + renderErr.message + '. The n8n workflow may need updating — reimport workflow.json.');
+      document.getElementById('estimateForm').style.display = 'block';
+    }
   } catch (err) {
     document.getElementById('estimateForm').style.display = 'block';
     document.getElementById('loading').style.display = 'none';
@@ -372,15 +372,28 @@ function displayResults(data) {
   document.getElementById('resultPackage').textContent = data.recommended_package;
 
   // STC rebate bar
-  const stc = data.stc_rebate;
-  document.getElementById('stcAmount').textContent = '-$' + stc.rebate_aud.toLocaleString();
-  document.getElementById('stcDetail').textContent = 'Government STC Rebate: ' + stc.total_stcs + ' STCs \u00d7 $' + stc.stc_price_aud + ' | ' + stc.zone_label;
+  const stc = data.stc_rebate || {};
+  if (stc.rebate_aud) {
+    document.getElementById('stcAmount').textContent = '-$' + stc.rebate_aud.toLocaleString();
+    document.getElementById('stcDetail').textContent = 'Government STC Rebate: ' + stc.total_stcs + ' STCs \u00d7 $' + (stc.stc_price_aud || 40) + ' | ' + (stc.zone_label || 'Zone 3');
+  } else {
+    document.querySelector('.stc-bar').style.display = 'none';
+  }
 
   // Package comparison cards
-  renderPackages(data.packages, stc.rebate_aud);
+  if (data.packages) {
+    renderPackages(data.packages, stc.rebate_aud || 0);
+  } else if (data.price_range_aud) {
+    // v1 fallback — show price range directly
+    document.getElementById('packageGrid').innerHTML =
+      '<div class="pkg-card" style="grid-column:1/-1;text-align:center">' +
+      '<h3>Estimated Price</h3>' +
+      '<div class="net">$' + data.price_range_aud[0].toLocaleString() + ' &ndash; $' + data.price_range_aud[1].toLocaleString() + '</div>' +
+      '<div class="det" style="margin-top:8px;color:var(--muted)">Reimport workflow.json for Economy/Premium package breakdown</div></div>';
+  }
 
   // Savings
-  renderSavings(data.estimated_monthly_savings_aud, data.estimated_annual_savings_aud);
+  renderSavings(data.estimated_monthly_savings_aud, data.estimated_annual_savings_aud || [Math.round(data.estimated_monthly_savings_aud[0]*12), Math.round(data.estimated_monthly_savings_aud[1]*12)]);
 
   // Battery section
   const showBattery = data.customer.goal !== 'solar_only';
@@ -399,8 +412,8 @@ function displayResults(data) {
   if (data.system.battery_kwh > 0) gridHtml += stat('Battery', data.system.battery_kwh + ' kWh');
   gridHtml += stat('Monthly Usage', data.usage.monthly_kwh + ' kWh');
   gridHtml += stat('Daily Usage', data.usage.daily_kwh + ' kWh');
-  gridHtml += stat('STC Zone', data.stc_rebate.zone_label);
-  gridHtml += stat('STCs Claimed', data.stc_rebate.total_stcs + ' ($' + data.stc_rebate.rebate_aud.toLocaleString() + ')');
+  if (stc.zone_label) gridHtml += stat('STC Zone', stc.zone_label);
+  if (stc.total_stcs) gridHtml += stat('STCs Claimed', stc.total_stcs + ' ($' + stc.rebate_aud.toLocaleString() + ')');
   document.getElementById('resultGrid').innerHTML = gridHtml;
 
   // Map
@@ -411,7 +424,7 @@ function displayResults(data) {
   }
 
   // Bullets
-  document.getElementById('resultBullets').innerHTML = data.explanation_bullets.map(b => '<li>' + b + '</li>').join('');
+  document.getElementById('resultBullets').innerHTML = (data.explanation_bullets || []).map(b => '<li>' + b + '</li>').join('');
 
   // Pre-fill firm quote address
   document.getElementById('fq_address').value = data.customer.address || '';
@@ -477,13 +490,18 @@ function updateBatteryCalc() {
 function recalcWithBattery(battKwh) {
   if (!lastEstimate || !lastEstimate._calc_params) return;
   const cp = lastEstimate._calc_params;
+  const stc = lastEstimate.stc_rebate || {};
   const hasBatt = battKwh > 0;
+  const stcPriceAud = stc.stc_price_aud || 40;
 
-  // Battery STC
-  const battStcs = hasBatt ? Math.floor(battKwh * lastEstimate.stc_rebate.stc_price_aud > 0 ? battKwh * cp.stc_battery_per_kwh / lastEstimate.stc_rebate.stc_price_aud : 0) : 0;
-  const solarStcs = lastEstimate.stc_rebate.solar_stcs;
+  // Battery STC: stc_battery_per_kwh is already (stcs_per_kwh * stc_price) from backend
+  // So battery rebate = battKwh * stc_battery_per_kwh
+  const battRebate = hasBatt ? Math.round(battKwh * cp.stc_battery_per_kwh) : 0;
+  const solarRebate = cp.stc_solar_rebate || 0;
+  const rebate = solarRebate + battRebate;
+  const solarStcs = stc.solar_stcs || 0;
+  const battStcs = hasBatt ? Math.floor(battKwh * 8.4) : 0;
   const totalStcs = solarStcs + battStcs;
-  const rebate = totalStcs * lastEstimate.stc_rebate.stc_price_aud;
 
   // Update STC display
   document.getElementById('stcAmount').textContent = '-$' + rebate.toLocaleString();
@@ -496,8 +514,8 @@ function recalcWithBattery(battKwh) {
     const battPrice = tier === 'economy' ? cp.battery_price_economy : cp.battery_price_premium;
     let battCost = hasBatt ? battKwh * battPrice : 0;
     if (isRetrofit) battCost *= cp.retrofit_premium;
-    battCost = Math.round(battCost * cp.phase_multiplier / 100) * 100;
-    const gross = solarCost + battCost;
+    const grossBatt = Math.round(battCost * cp.phase_multiplier / 100) * 100;
+    const gross = solarCost + grossBatt;
     const net = Math.max(0, gross - rebate);
     const el = document.getElementById('pkg_net_' + tier);
     if (el) el.textContent = '$' + net.toLocaleString();
