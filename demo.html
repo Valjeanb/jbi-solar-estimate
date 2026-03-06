@@ -578,7 +578,17 @@ function showFirmQuoteForm() {
 }
 
 function openReport() {
-  if (lastEstimate && lastEstimate.pdf_url) window.open(lastEstimate.pdf_url, '_blank');
+  if (!lastEstimate) return;
+  // Prefer report_html (raw HTML), fall back to pdf_url (base64 data URI)
+  let html = lastEstimate.report_html;
+  if (!html && lastEstimate.pdf_url) {
+    // Decode base64 data URI
+    try { html = atob(lastEstimate.pdf_url.split(',')[1]); } catch(e) {}
+  }
+  if (!html) return;
+  const blob = new Blob([html], { type: 'text/html' });
+  const url = URL.createObjectURL(blob);
+  window.open(url, '_blank');
 }
 
 async function submitFirmQuote() {
