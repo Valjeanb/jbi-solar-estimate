@@ -81,6 +81,8 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;b
 .slider-labels{display:flex;justify-content:space-between;font-size:11px;color:var(--muted);margin-bottom:6px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
 input[type="range"]{-webkit-appearance:none;width:100%;height:8px;border-radius:4px;background:linear-gradient(90deg,var(--accent2),var(--accent),var(--primary));outline:none}
 input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;height:24px;border-radius:50%;background:#fff;border:3px solid var(--accent);cursor:pointer;box-shadow:0 2px 6px rgba(0,0,0,.15)}
+.slider-ticks{display:flex;justify-content:space-between;padding:4px 0;font-size:11px;color:var(--muted);font-weight:600}
+.slider-note{font-size:12px;color:var(--muted);margin:10px 0 0;font-style:italic;text-align:center}
 .battery-display{text-align:center;margin-top:12px}
 .battery-kwh{font-size:28px;font-weight:800;color:var(--primary)}
 .battery-pct{font-size:14px;color:var(--muted);margin-top:2px}
@@ -205,13 +207,15 @@ input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:24px;hei
       </label>
       <div id="batterySliderWrap">
         <div class="slider-wrap">
-          <div class="slider-labels"><span>Grid-tied</span><span>Partial backup</span><span>Full independence</span></div>
-          <input type="range" id="batterySlider" min="0" max="100" value="60" oninput="updateBatteryCalc()">
+          <div class="slider-labels"><span>Small</span><span>Medium</span><span>Full backup</span></div>
+          <input type="range" id="batterySlider" min="0" max="5" value="2" step="1" oninput="updateBatteryCalc()">
+          <div class="slider-ticks" id="sliderTicks"></div>
         </div>
         <div class="battery-display">
-          <div class="battery-kwh" id="batteryKwhDisplay">10.0 kWh</div>
-          <div class="battery-pct" id="batteryPctDisplay">60% grid independence</div>
+          <div class="battery-kwh" id="batteryKwhDisplay">10 kWh</div>
+          <div class="battery-pct" id="batteryPctDisplay">Covers ~50% of nightly usage</div>
         </div>
+        <p class="slider-note">Use the slider to see how battery size affects pricing and grid independence in real time.</p>
       </div>
     </div>
 
@@ -395,15 +399,24 @@ function displayResults(data) {
   // Savings
   renderSavings(data.estimated_monthly_savings_aud, data.estimated_annual_savings_aud || [Math.round(data.estimated_monthly_savings_aud[0]*12), Math.round(data.estimated_monthly_savings_aud[1]*12)]);
 
-  // Battery section
+  // Battery section — discrete size slider
   const showBattery = data.customer.goal !== 'solar_only';
   document.getElementById('batterySection').style.display = 'block';
   document.getElementById('batteryToggle').checked = showBattery;
   document.getElementById('batterySliderWrap').style.display = showBattery ? 'block' : 'none';
-  if (showBattery && data.system.battery_kwh > 0) {
+  if (showBattery && data._calc_params) {
+    const sizes = data._calc_params.battery_sizes; // [5, 10, 13.5, 15, 20]
+    const slider = document.getElementById('batterySlider');
+    slider.max = sizes.length - 1;
+    // Set slider to the recommended battery position
+    const recIdx = sizes.indexOf(data.system.battery_kwh);
+    slider.value = recIdx >= 0 ? recIdx : Math.floor(sizes.length / 2);
+    // Render tick labels
+    document.getElementById('sliderTicks').innerHTML = sizes.map(s => '<span>' + s + '</span>').join('');
+    updateBatteryCalc();
+  } else if (showBattery && data.system.battery_kwh > 0) {
     document.getElementById('batteryKwhDisplay').textContent = data.system.battery_kwh + ' kWh';
-    document.getElementById('batterySlider').value = 60;
-    document.getElementById('batteryPctDisplay').textContent = '60% grid independence';
+    document.getElementById('batteryPctDisplay').textContent = 'Recommended size';
   }
 
   // System grid
@@ -475,14 +488,18 @@ function toggleBattery(on) {
 function updateBatteryCalc() {
   if (!lastEstimate || !lastEstimate._calc_params) return;
   const cp = lastEstimate._calc_params;
-  const pct = parseInt(document.getElementById('batterySlider').value);
+  const sizes = cp.battery_sizes || [5, 10, 13.5, 15, 20];
+  const idx = parseInt(document.getElementById('batterySlider').value);
+  const battKwh = sizes[idx] || 0;
 
-  // Calculate battery kWh from slider
-  const rawKwh = cp.daily_kwh * (pct / 100) * cp.battery_dod_factor * cp.battery_inefficiency_factor;
-  const battKwh = pct === 0 ? 0 : (cp.battery_sizes.find(s => s >= rawKwh) || cp.battery_sizes[cp.battery_sizes.length - 1]);
+  // Calculate what % of nightly usage this covers
+  // Usable kWh after DoD = battKwh / dod_factor (since sizing already applied dod)
+  const usableKwh = battKwh / (cp.battery_dod_factor || 1.25);
+  const nightlyKwh = cp.daily_kwh * 0.55; // ~55% of usage is off-peak/night
+  const coveragePct = Math.min(100, Math.round((usableKwh / nightlyKwh) * 100));
 
-  document.getElementById('batteryKwhDisplay').textContent = battKwh.toFixed(1) + ' kWh';
-  document.getElementById('batteryPctDisplay').textContent = pct + '% grid independence';
+  document.getElementById('batteryKwhDisplay').textContent = battKwh + ' kWh';
+  document.getElementById('batteryPctDisplay').textContent = 'Covers ~' + coveragePct + '% of nightly usage \u2022 ' + coveragePct + '% grid independence';
 
   recalcWithBattery(battKwh);
 }
